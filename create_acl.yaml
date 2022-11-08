@@ -1,0 +1,157 @@
+---
+- name: Playbook for ACL traffic control
+  hosts: localhost
+  connection: local
+  vars_files:
+  - vars/vars.yaml
+
+  tasks:          
+
+
+  - name: Create allow SSH and HTTP SG Group
+    amazon.aws.ec2_group:
+      aws_profile: "{{ aws_profile }}"
+      name: allow_ssh
+      description: Allow SSH connection
+      vpc_id: "{{ default_vpc }}"
+      region: "{{ region }}"
+      rules:
+        - proto: tcp
+          from_port: 22
+          to_port: 22
+          cidr_ip: 0.0.0.0/0
+        - proto: tcp
+          from_port: 80
+          to_port: 80
+          cidr_ip: 0.0.0.0/0
+    register: sg_group
+
+  - name: Create instance in default subnet with default NACL (Full access allowed)
+    amazon.aws.ec2_instance:
+      aws_profile: "{{ aws_profile }}"
+      name: "{{ instance_name }}"
+      key_name: "{{ key_pair_name }}"
+      region: "{{ region }}"
+      vpc_subnet_id: "{{ default_subnet }}"   
+      instance_type: "{{ instance_type }}"
+      security_group: "{{ sg_group.group_id }}"
+      network:
+        assign_public_ip: true
+      image_id: "{{ ami }}"
+      wait: true
+    register: instance
+
+  - name: Add new instance to host group
+    add_host:
+      hostname: "{{ instance.instances[0].public_ip_address }}"
+      groupname: just_launched
+      ansible_ssh_user: ec2-user
+      ansible_ssh_private_key_file: "{{ ssh_key }}"
+
+  - name: Wait for SSH to come up
+    delegate_to: "{{ instance.instances[0].public_ip_address }}"
+    wait_for_connection:
+      delay: 5
+      timeout: 320
+
+- hosts: just_launched
+  name: Playbook for installing www server
+  gather_facts: false
+  become: yes
+  tasks:
+  - name: Going to Install httpd
+    yum:
+      name: httpd
+      state: present
+    tags:
+      - Web
+  - name: chkconfig httpd on
+    shell: chkconfig httpd on
+  - name: start httpd service
+    ansible.builtin.service:
+      name: httpd
+      state: started
+  - name: Set index.html
+    shell: echo '<html><h1>hello, world! </h1></html>' > /var/www/html/index.html
+
+- hosts: localhost 
+  name: Playbook for checking web server and change acl
+  tasks:
+  - name: Curl to instance from localhost
+    ansible.builtin.uri:
+      url: "http://{{item}}/"
+      return_content: yes
+    with_items: 
+      - "{{ groups['just_launched'] }}"
+    register: this
+  - name: Returned HTML body
+    debug:
+      var:
+        this.results[0].content
+
+- name: Playbook for ACL traffic control with no Access
+  hosts: localhost
+  connection: local
+  vars_files:
+  - vars/vars.yaml
+  tasks:
+
+  - name: "Create custom NACL and assign it to default subnet"
+    community.aws.ec2_vpc_nacl:
+      aws_profile: "{{ aws_profile }}"
+      vpc_id: "{{ default_vpc }}"
+      name: "{{ nacl_name }}"
+      region: "{{ region }}"
+      subnets: ["{{ default_subnet }}"]
+    register: custom_nacl
+
+- hosts: localhost 
+  name: Playbook for checking if web server is reachable after changing NACL
+  tasks:
+  - name: Curl to instance from localhost
+    ansible.builtin.uri:
+      url: "http://{{item}}/"
+      return_content: yes
+    with_items: 
+      - "{{ groups['just_launched'] }}"
+    register: this
+    ignore_errors: yes
+ 
+
+- name: Playbook for ACL traffic control with no Access
+  hosts: localhost
+  connection: local
+  vars_files:
+  - vars/vars.yaml
+  tasks:
+
+  - name: "Change custom NACL with inbound rules(80,443,22) and assign it to default subnet"
+    community.aws.ec2_vpc_nacl:
+      aws_profile: "{{ aws_profile }}"
+      vpc_id: "{{ default_vpc }}"
+      name: "{{ nacl_name }}"
+      region: "{{ region }}"
+      subnets: ["{{ default_subnet }}"]
+      ingress:
+        # rule no, protocol, allow/deny, cidr, icmp_type, icmp_code,
+        #                                             port from, port to
+        - [100, 'tcp', 'allow', '0.0.0.0/0', null, null, 22, 22]
+        - [200, 'tcp', 'allow', '0.0.0.0/0', null, null, 80, 80]
+      egress:
+        - [100, 'all', 'allow', '0.0.0.0/0', null, null, 32768, 61000]
+    register: custom_nacl
+
+- hosts: localhost 
+  name: Playbook for checking if web server is reachable after changing NACL
+  tasks:
+  - name: Curl to instance from localhost
+    ansible.builtin.uri:
+      url: "http://{{item}}/"
+      return_content: yes
+    with_items: 
+      - "{{ groups['just_launched'] }}"
+    register: this
+  - name: Returned HTML body
+    debug:
+      var:
+        this.results[0].content
