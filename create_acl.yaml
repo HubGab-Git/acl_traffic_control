@@ -137,7 +137,7 @@
         #                                             port from, port to
         - [100, 'tcp', 'allow', '0.0.0.0/0', null, null, 22, 22]
         - [200, 'tcp', 'allow', '0.0.0.0/0', null, null, 80, 80]
-        - [200, 'tcp', 'allow', '0.0.0.0/0', null, null, 443, 443]
+        - [300, 'tcp', 'allow', '0.0.0.0/0', null, null, 443, 443]
       egress:
         - [100, 'all', 'allow', '0.0.0.0/0', null, null, 32768, 61000]
     register: custom_nacl
